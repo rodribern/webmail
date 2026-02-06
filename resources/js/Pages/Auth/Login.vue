@@ -1,13 +1,16 @@
 <script setup>
 import { Head, useForm } from '@inertiajs/vue3';
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 const props = defineProps({
     branding: Object,
+    emailDomain: String,
 });
 
 const primaryColor = computed(() => props.branding?.colors?.primary || '#3B82F6');
 const secondaryColor = computed(() => props.branding?.colors?.secondary || '#1E40AF');
+
+const username = ref('');
 
 const form = useForm({
     email: '',
@@ -16,6 +19,9 @@ const form = useForm({
 });
 
 const submit = () => {
+    if (props.emailDomain) {
+        form.email = username.value + '@' + props.emailDomain;
+    }
     form.post('/login', {
         onFinish: () => form.reset('password'),
     });
@@ -48,7 +54,21 @@ const submit = () => {
                     <label for="email" class="block text-sm font-medium text-gray-700">
                         E-mail
                     </label>
+                    <div v-if="emailDomain" class="mt-1 flex items-center border border-gray-300 rounded-md shadow-sm focus-within:ring-2 focus-within:border-transparent" :style="{ '--tw-ring-color': primaryColor }">
+                        <input
+                            id="email"
+                            type="text"
+                            v-model="username"
+                            required
+                            autofocus
+                            autocomplete="username"
+                            class="flex-1 min-w-0 px-3 py-2 border-0 rounded-l-md focus:outline-none bg-transparent"
+                            placeholder="usuario"
+                        />
+                        <span class="px-3 py-2 text-gray-500 bg-gray-50 border-l border-gray-300 rounded-r-md whitespace-nowrap text-sm select-none">@{{ emailDomain }}</span>
+                    </div>
                     <input
+                        v-else
                         id="email"
                         type="email"
                         v-model="form.email"

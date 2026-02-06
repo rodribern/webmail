@@ -28,6 +28,7 @@ class AuthController extends Controller
 
         return Inertia::render('Auth/Login', [
             'branding' => $branding,
+            'emailDomain' => $domain?->name,
         ]);
     }
 
