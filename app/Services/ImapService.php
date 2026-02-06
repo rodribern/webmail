@@ -85,9 +85,14 @@ class ImapService
                 $result[] = $this->formatFolder($folder);
             }
 
-            // Ordena as pastas
+            // Ordena as pastas: sistema primeiro, depois alfabética
             usort($result, function ($a, $b) {
-                return $this->getFolderSortOrder($a['name']) <=> $this->getFolderSortOrder($b['name']);
+                $orderA = $this->getFolderSortOrder($a['name']);
+                $orderB = $this->getFolderSortOrder($b['name']);
+                if ($orderA !== $orderB) {
+                    return $orderA <=> $orderB;
+                }
+                return strcasecmp($a['name'], $b['name']);
             });
 
             return $result;
@@ -246,7 +251,7 @@ class ImapService
             'message_id' => $message->getMessageId()?->first(),
             'subject' => $subjectText,
             'from' => [
-                'name' => $fromAddress?->personal ? $this->decodeMime($fromAddress->personal) : ($fromAddress?->mail ?? 'Desconhecido'),
+                'name' => $fromAddress?->personal ? $this->decodeMime(trim($fromAddress->personal, '"')) : ($fromAddress?->mail ?? 'Desconhecido'),
                 'email' => $fromAddress?->mail ?? '',
             ],
             'date' => $date?->format('Y-m-d H:i:s'),
@@ -351,6 +356,7 @@ class ImapService
 
         // Processa HTML e imagens inline
         $bodyHtml = $message->getHTMLBody();
+        $bodyText = $message->getTextBody();
         $inlineImages = $this->getInlineImages($message);
 
         // Substitui cid: por data URLs
@@ -374,7 +380,7 @@ class ImapService
             'flagged' => $message->hasFlag('Flagged'),
             'has_attachments' => $this->hasRealAttachments($message),
             'body_html' => $bodyHtml,
-            'body_text' => $message->getTextBody(),
+            'body_text' => $bodyText,
             'attachments' => $this->formatAttachments($message, true),
         ];
     }
@@ -439,13 +445,19 @@ class ImapService
      */
     private function formatAddresses($addresses): array
     {
-        if (!$addresses) {
+        if (!$addresses || ($addresses instanceof \Webklex\PHPIMAP\Attribute && $addresses->count() === 0)) {
             return [];
         }
 
         $result = [];
-        foreach ($addresses as $address) {
+        // Attribute não implementa Traversable, então usamos all() para iterar
+        $items = ($addresses instanceof \Webklex\PHPIMAP\Attribute) ? $addresses->all() : (is_array($addresses) ? $addresses : []);
+
+        foreach ($items as $address) {
             $name = $address->personal ?? $address->mail ?? '';
+            if ($name) {
+                $name = trim($name, '"');
+            }
             $result[] = [
                 'name' => $name ? $this->decodeMime($name) : '',
                 'email' => $address->mail ?? '',
@@ -513,14 +525,21 @@ class ImapService
     public function toggleSeen(string $folderPath, int $uid, bool $seen): bool
     {
         if (!$this->client) {
+            \Log::error('toggleSeen: no client');
             return false;
         }
 
         try {
             $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                \Log::error('toggleSeen: folder not found', ['folder' => $folderPath]);
+                return false;
+            }
+
             $message = $folder->messages()->getMessageByUid($uid);
 
             if (!$message) {
+                \Log::error('toggleSeen: message not found', ['uid' => $uid]);
                 return false;
             }
 
@@ -530,8 +549,10 @@ class ImapService
                 $message->unsetFlag('Seen');
             }
 
+            \Log::debug('toggleSeen: flag set', ['seen' => $seen, 'uid' => $uid]);
             return true;
         } catch (\Exception $e) {
+            \Log::error('toggleSeen error', ['error' => $e->getMessage()]);
             return false;
         }
     }
@@ -604,5 +625,465 @@ class ImapService
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Marca múltiplas mensagens como lida/não lida
+     */
+    public function batchToggleSeen(string $folderPath, array $uids, bool $seen): int
+    {
+        if (!$this->client) {
+            return 0;
+        }
+
+        try {
+            $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                return 0;
+            }
+
+            $count = 0;
+            foreach ($uids as $uid) {
+                try {
+                    $message = $folder->messages()->getMessageByUid($uid);
+                    if (!$message) continue;
+
+                    if ($seen) {
+                        $message->setFlag('Seen');
+                    } else {
+                        $message->unsetFlag('Seen');
+                    }
+                    $count++;
+                } catch (\Exception $e) {
+                    \Log::warning('batchToggleSeen: failed for uid', ['uid' => $uid, 'error' => $e->getMessage()]);
+                }
+            }
+
+            return $count;
+        } catch (\Exception $e) {
+            \Log::error('batchToggleSeen error', ['error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
+    /**
+     * Exclui múltiplas mensagens (move para lixeira ou expunge)
+     */
+    public function batchDelete(string $folderPath, array $uids): int
+    {
+        if (!$this->client) {
+            return 0;
+        }
+
+        try {
+            $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                return 0;
+            }
+
+            // Descobre pasta Trash uma vez
+            $trashFolder = null;
+            $trashFolders = ['Trash', 'INBOX.Trash', 'Lixeira', 'INBOX.Lixeira'];
+            foreach ($trashFolders as $trash) {
+                try {
+                    $trashFolder = $this->client->getFolder($trash);
+                    if ($trashFolder) break;
+                } catch (\Exception $e) {
+                    $trashFolder = null;
+                }
+            }
+
+            $count = 0;
+            foreach ($uids as $uid) {
+                try {
+                    $message = $folder->messages()->getMessageByUid($uid);
+                    if (!$message) continue;
+
+                    if ($trashFolder && $folderPath !== $trashFolder->path) {
+                        $message->move($trashFolder->path);
+                    } else {
+                        $message->delete();
+                    }
+                    $count++;
+                } catch (\Exception $e) {
+                    \Log::warning('batchDelete: failed for uid', ['uid' => $uid, 'error' => $e->getMessage()]);
+                }
+            }
+
+            return $count;
+        } catch (\Exception $e) {
+            \Log::error('batchDelete error', ['error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
+    /**
+     * Move múltiplas mensagens para outra pasta
+     */
+    public function batchMove(string $folderPath, array $uids, string $targetFolder): int
+    {
+        if (!$this->client) {
+            return 0;
+        }
+
+        try {
+            $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                return 0;
+            }
+
+            $count = 0;
+            foreach ($uids as $uid) {
+                try {
+                    $message = $folder->messages()->getMessageByUid($uid);
+                    if (!$message) continue;
+
+                    $message->move($targetFolder);
+                    $count++;
+                } catch (\Exception $e) {
+                    \Log::warning('batchMove: failed for uid', ['uid' => $uid, 'error' => $e->getMessage()]);
+                }
+            }
+
+            return $count;
+        } catch (\Exception $e) {
+            \Log::error('batchMove error', ['error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
+    /**
+     * Busca um anexo específico de uma mensagem
+     *
+     * @return array{name: string, mime: string, content: string}|null
+     */
+    public function getAttachment(string $folderPath, int $uid, int $index): ?array
+    {
+        if (!$this->client) {
+            return null;
+        }
+
+        try {
+            $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                return null;
+            }
+
+            $message = $folder->messages()->getMessageByUid($uid);
+            if (!$message) {
+                return null;
+            }
+
+            $attachments = $message->getAttachments();
+            $current = 0;
+
+            foreach ($attachments as $attachment) {
+                if ($current === $index) {
+                    return [
+                        'name' => $attachment->getName() ?? 'anexo',
+                        'mime' => $attachment->getMimeType() ?? 'application/octet-stream',
+                        'content' => $attachment->getContent(),
+                        'size' => $attachment->getSize(),
+                    ];
+                }
+                $current++;
+            }
+
+            return null;
+        } catch (\Exception $e) {
+            \Log::error('IMAP getAttachment error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Busca mensagens por termo de pesquisa
+     */
+    public function searchMessages(string $folderPath, string $query, int $page = 1, int $perPage = 50): array
+    {
+        if (!$this->client) {
+            return ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+        }
+
+        // Sanitiza a query para IMAP SEARCH
+        $query = substr(str_replace(['"', '\\'], '', $query), 0, 200);
+
+        if (empty(trim($query))) {
+            return ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+        }
+
+        try {
+            $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                return ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+            }
+
+            // Busca por assunto OR remetente OR corpo
+            // IMAP OR opera em pares: OR (crit1) (crit2)
+            // Para 3 critérios: OR (SUBJECT x) (OR (FROM x) (TEXT x))
+            $messages = $folder->messages()
+                ->orWhere(function ($q) use ($query) {
+                    $q->where('SUBJECT', $query);
+                    $q->orWhere(function ($q2) use ($query) {
+                        $q2->where('FROM', $query);
+                        $q2->where('TEXT', $query);
+                    });
+                })
+                ->setFetchOrder('desc')
+                ->get();
+
+            $total = count($messages);
+            $totalPages = $total > 0 ? ceil($total / $perPage) : 0;
+
+            // Paginação manual
+            $offset = ($page - 1) * $perPage;
+            $paged = $messages->slice($offset, $perPage);
+
+            $result = [];
+            foreach ($paged as $message) {
+                $result[] = $this->formatMessagePreview($message);
+            }
+
+            usort($result, function ($a, $b) {
+                return strtotime($b['date'] ?? '1970-01-01') <=> strtotime($a['date'] ?? '1970-01-01');
+            });
+
+            return [
+                'messages' => $result,
+                'total' => $total,
+                'page' => $page,
+                'per_page' => $perPage,
+                'total_pages' => $totalPages,
+            ];
+        } catch (\Exception $e) {
+            \Log::error('IMAP searchMessages error: ' . $e->getMessage());
+            return ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+        }
+    }
+
+    /**
+     * Cria uma nova pasta IMAP
+     */
+    public function createFolder(string $name): bool
+    {
+        if (!$this->client) {
+            return false;
+        }
+
+        try {
+            $this->client->createFolder($name);
+            return true;
+        } catch (\Exception $e) {
+            // Alguns servidores (Dovecot) criam a pasta mas falham no subscribe/select.
+            // Verifica se a pasta realmente existe após a tentativa.
+            try {
+                $folder = $this->client->getFolder($name);
+                if ($folder) {
+                    return true;
+                }
+            } catch (\Exception $e2) {
+                // Ignora — pasta realmente não foi criada
+            }
+
+            \Log::error('IMAP createFolder error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Renomeia uma pasta IMAP
+     */
+    public function renameFolder(string $path, string $newName): bool
+    {
+        if (!$this->client) {
+            return false;
+        }
+
+        try {
+            $folder = $this->client->getFolder($path);
+            if (!$folder) {
+                return false;
+            }
+
+            $folder->rename($newName);
+            return true;
+        } catch (\Exception $e) {
+            // Verifica se a renomeação aconteceu apesar da exceção
+            try {
+                $renamed = $this->client->getFolder($newName);
+                if ($renamed) {
+                    return true;
+                }
+            } catch (\Exception $e2) {
+                // Ignora
+            }
+
+            \Log::error('IMAP renameFolder error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Exclui uma pasta IMAP
+     */
+    public function deleteFolder(string $path): bool
+    {
+        if (!$this->client) {
+            return false;
+        }
+
+        try {
+            $folder = $this->client->getFolder($path);
+            if (!$folder) {
+                return false;
+            }
+
+            $folder->delete();
+            return true;
+        } catch (\Exception $e) {
+            // Verifica se a exclusão aconteceu apesar da exceção
+            try {
+                $still = $this->client->getFolder($path);
+                if (!$still) {
+                    return true;
+                }
+            } catch (\Exception $e2) {
+                // Pasta não encontrada = exclusão funcionou
+                return true;
+            }
+
+            \Log::error('IMAP deleteFolder error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Adiciona uma mensagem raw (RFC822) a uma pasta IMAP
+     */
+    public function appendToFolder(string $folderPath, string $rawMessage, array $flags = []): bool
+    {
+        if (!$this->client) {
+            return false;
+        }
+
+        try {
+            $folder = $this->client->getFolder($folderPath);
+            if (!$folder) {
+                // Tenta nomes alternativos para pastas comuns
+                $alternatives = [
+                    'Sent' => ['Sent', 'INBOX.Sent', 'Sent Messages', 'Enviados'],
+                    'Drafts' => ['Drafts', 'INBOX.Drafts', 'Rascunhos'],
+                ];
+
+                foreach ($alternatives as $candidates) {
+                    foreach ($candidates as $candidate) {
+                        if ($candidate === $folderPath) {
+                            continue;
+                        }
+                        try {
+                            $folder = $this->client->getFolder($candidate);
+                            if ($folder) {
+                                break 2;
+                            }
+                        } catch (\Exception $e) {
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if (!$folder) {
+                \Log::warning("IMAP: Pasta '{$folderPath}' não encontrada para append");
+                return false;
+            }
+
+            $folder->appendMessage($rawMessage, $flags);
+            return true;
+        } catch (\Exception $e) {
+            \Log::error('IMAP appendToFolder error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Colhe endereços de e-mail das mensagens recentes para autocomplete
+     */
+    public function harvestContacts(int $limit = 100): array
+    {
+        if (!$this->client) {
+            return [];
+        }
+
+        $contacts = [];
+        $seen = [];
+
+        // Colhe do Sent primeiro, depois INBOX
+        $foldersToScan = ['Sent', 'INBOX.Sent', 'INBOX'];
+
+        foreach ($foldersToScan as $folderPath) {
+            try {
+                $folder = $this->client->getFolder($folderPath);
+                if (!$folder) {
+                    continue;
+                }
+
+                $messages = $folder->messages()
+                    ->all()
+                    ->setFetchOrder('desc')
+                    ->limit(min($limit, 100))
+                    ->get();
+
+                foreach ($messages as $message) {
+                    // Colhe To, From, Cc
+                    $addressLists = [
+                        $message->getTo(),
+                        $message->getFrom(),
+                        $message->getCc(),
+                    ];
+
+                    foreach ($addressLists as $addresses) {
+                        if (!$addresses) {
+                            continue;
+                        }
+                        foreach ($addresses as $address) {
+                            $email = $address->mail ?? '';
+                            if (!$email || isset($seen[$email])) {
+                                continue;
+                            }
+                            $seen[$email] = true;
+                            $name = $address->personal ?? '';
+                            $contacts[] = [
+                                'email' => $email,
+                                'name' => $name ? $this->decodeMime($name) : '',
+                            ];
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                continue;
+            }
+        }
+
+        // Remove o próprio usuário da lista
+        $userEmail = session('imap_credentials.email');
+        $contacts = array_values(array_filter($contacts, function ($c) use ($userEmail) {
+            return $c['email'] !== $userEmail;
+        }));
+
+        return array_slice($contacts, 0, 500);
+    }
+
+    /**
+     * Verifica se uma pasta é do sistema (não pode ser renomeada/excluída)
+     */
+    public static function isSystemFolder(string $name): bool
+    {
+        $systemFolders = [
+            'inbox', 'sent', 'drafts', 'trash', 'spam', 'junk',
+            'inbox.sent', 'inbox.drafts', 'inbox.trash', 'inbox.spam', 'inbox.junk',
+            'sent messages', 'lixeira', 'rascunhos', 'enviados', 'lixo eletrônico',
+        ];
+
+        return in_array(strtolower($name), $systemFolders);
     }
 }

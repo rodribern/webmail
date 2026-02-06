@@ -8,6 +8,7 @@ class UserSignature extends Model
 {
     protected $fillable = [
         'email',
+        'display_name',
         'signature_html',
     ];
 

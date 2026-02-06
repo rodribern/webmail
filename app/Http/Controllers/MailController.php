@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\ImapService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -195,16 +196,24 @@ class MailController extends Controller
      */
     public function toggleSeen(Request $request, string $folder, int $uid): JsonResponse
     {
+        \Log::debug('toggleSeen called', ['folder' => $folder, 'uid' => $uid, 'seen' => $request->input('seen')]);
+
         $seen = $request->boolean('seen', true);
 
         if (!$this->imapService->connect()) {
+            \Log::error('toggleSeen: IMAP connection failed');
             return response()->json(['error' => 'Falha na conexão'], 500);
         }
 
         $result = $this->imapService->toggleSeen($folder, $uid, $seen);
+        \Log::debug('toggleSeen result', ['result' => $result]);
         $this->imapService->disconnect();
 
-        return response()->json(['success' => $result]);
+        if (!$result) {
+            return response()->json(['error' => 'Falha ao alterar flag'], 500);
+        }
+
+        return response()->json(['success' => true]);
     }
 
     /**
@@ -239,5 +248,228 @@ class MailController extends Controller
         $this->imapService->disconnect();
 
         return response()->json(['success' => $result]);
+    }
+
+    /**
+     * API: Marca múltiplas mensagens como lida/não lida
+     */
+    public function batchToggleSeen(Request $request, string $folder): JsonResponse
+    {
+        \Log::info('batchToggleSeen called', [
+            'folder' => $folder,
+            'input' => $request->all(),
+        ]);
+
+        $request->validate([
+            'uids' => 'required|array|min:1',
+            'uids.*' => 'integer',
+        ]);
+
+        $seen = $request->boolean('seen');
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão IMAP.'], 500);
+        }
+
+        try {
+            $count = $this->imapService->batchToggleSeen($folder, $request->input('uids'), $seen);
+            $this->imapService->disconnect();
+
+            return response()->json(['success' => true, 'count' => $count]);
+        } catch (\Exception $e) {
+            $this->imapService->disconnect();
+            \Log::error('batchToggleSeen exception', ['error' => $e->getMessage()]);
+            return response()->json(['error' => 'Erro ao alterar flags: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * API: Exclui múltiplas mensagens
+     */
+    public function batchDelete(Request $request, string $folder): JsonResponse
+    {
+        $request->validate([
+            'uids' => 'required|array|min:1',
+            'uids.*' => 'integer',
+        ]);
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $count = $this->imapService->batchDelete($folder, $request->input('uids'));
+        $this->imapService->disconnect();
+
+        return response()->json(['success' => true, 'count' => $count]);
+    }
+
+    /**
+     * API: Move múltiplas mensagens para outra pasta
+     */
+    public function batchMove(Request $request, string $folder): JsonResponse
+    {
+        $request->validate([
+            'uids' => 'required|array|min:1',
+            'uids.*' => 'integer',
+            'target' => 'required|string|max:255',
+        ]);
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $count = $this->imapService->batchMove($folder, $request->input('uids'), $request->input('target'));
+        $this->imapService->disconnect();
+
+        return response()->json(['success' => true, 'count' => $count]);
+    }
+
+    /**
+     * API: Download de anexo
+     */
+    public function downloadAttachment(string $folder, int $uid, int $index): StreamedResponse|JsonResponse
+    {
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $attachment = $this->imapService->getAttachment($folder, $uid, $index);
+        $this->imapService->disconnect();
+
+        if (!$attachment) {
+            return response()->json(['error' => 'Anexo não encontrado'], 404);
+        }
+
+        // Sanitiza o nome do arquivo para o header Content-Disposition
+        $filename = preg_replace('/[^\w\-. ]/', '_', $attachment['name']);
+        $mime = $attachment['mime'] ?: 'application/octet-stream';
+
+        // Tipos que o navegador pode exibir inline
+        $inlineTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'application/pdf'];
+        $disposition = in_array($mime, $inlineTypes) ? 'inline' : 'attachment';
+
+        return response()->stream(function () use ($attachment) {
+            echo $attachment['content'];
+        }, 200, [
+            'Content-Type' => $mime,
+            'Content-Disposition' => "{$disposition}; filename=\"{$filename}\"",
+            'Content-Length' => strlen($attachment['content']),
+        ]);
+    }
+
+    /**
+     * API: Busca mensagens por termo
+     */
+    public function searchMessages(Request $request, string $folder): JsonResponse
+    {
+        $query = $request->get('q', '');
+        $page = (int) $request->get('page', 1);
+
+        if (empty(trim($query))) {
+            return response()->json(['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => 50, 'total_pages' => 0]);
+        }
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $data = $this->imapService->searchMessages($folder, $query, $page);
+        $this->imapService->disconnect();
+
+        return response()->json($data);
+    }
+
+    /**
+     * API: Cria pasta
+     */
+    public function createFolder(Request $request): JsonResponse
+    {
+        $request->validate([
+            'name' => ['required', 'string', 'max:50', 'regex:/^[\w\s\-\.]+$/u'],
+        ]);
+
+        $name = $request->input('name');
+
+        if (ImapService::isSystemFolder($name)) {
+            return response()->json(['error' => 'Não é possível criar pasta com nome reservado.'], 422);
+        }
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $result = $this->imapService->createFolder($name);
+        $this->imapService->disconnect();
+
+        if (!$result) {
+            return response()->json(['error' => 'Falha ao criar pasta.'], 500);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * API: Renomeia pasta
+     */
+    public function renameFolder(Request $request, string $folder): JsonResponse
+    {
+        $request->validate([
+            'new_name' => ['required', 'string', 'max:50', 'regex:/^[\w\s\-\.]+$/u'],
+        ]);
+
+        if (ImapService::isSystemFolder($folder)) {
+            return response()->json(['error' => 'Não é possível renomear pastas do sistema.'], 422);
+        }
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $result = $this->imapService->renameFolder($folder, $request->input('new_name'));
+        $this->imapService->disconnect();
+
+        if (!$result) {
+            return response()->json(['error' => 'Falha ao renomear pasta.'], 500);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * API: Exclui pasta
+     */
+    public function deleteFolder(string $folder): JsonResponse
+    {
+        if (ImapService::isSystemFolder($folder)) {
+            return response()->json(['error' => 'Não é possível excluir pastas do sistema.'], 422);
+        }
+
+        if (!$this->imapService->connect()) {
+            return response()->json(['error' => 'Falha na conexão'], 500);
+        }
+
+        $result = $this->imapService->deleteFolder($folder);
+        $this->imapService->disconnect();
+
+        if (!$result) {
+            return response()->json(['error' => 'Falha ao excluir pasta.'], 500);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * API: Sugere contatos baseado no histórico
+     */
+    public function suggestContacts(): JsonResponse
+    {
+        if (!$this->imapService->connect()) {
+            return response()->json([]);
+        }
+
+        $contacts = $this->imapService->harvestContacts();
+        $this->imapService->disconnect();
+
+        return response()->json($contacts);
     }
 }
