@@ -75,9 +75,13 @@ class ImapAuthService
                 'message' => 'Não foi possível conectar ao servidor de e-mail.',
             ];
         } catch (\Exception $e) {
+            \Log::error('Erro inesperado na autenticação IMAP', [
+                'email' => $email,
+                'exception' => $e->getMessage(),
+            ]);
             return [
                 'success' => false,
-                'message' => 'Erro ao autenticar: ' . $e->getMessage(),
+                'message' => 'Erro interno ao processar autenticação. Tente novamente.',
             ];
         }
     }

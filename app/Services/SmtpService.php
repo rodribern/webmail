@@ -138,10 +138,13 @@ class SmtpService
                 'raw_message' => $email->toString(),
             ];
         } catch (\Exception $e) {
-            \Log::error('SMTP send error: ' . $e->getMessage());
+            \Log::error('SMTP send error', [
+                'user' => $userEmail,
+                'exception' => $e->getMessage(),
+            ]);
             return [
                 'success' => false,
-                'error' => 'Falha ao enviar e-mail: ' . $e->getMessage(),
+                'error' => 'Falha ao enviar e-mail. Tente novamente ou verifique os destinatários.',
             ];
         }
     }

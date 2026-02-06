@@ -51,23 +51,30 @@ Route::middleware('imap.auth')->group(function () {
 
     // API routes
     Route::prefix('api/mail')->group(function () {
-        // Pastas
+        // Pastas (10 operações/minuto)
         Route::get('/folders', [MailController::class, 'getFolders']);
-        Route::post('/folders', [MailController::class, 'createFolder']);
+        Route::post('/folders', [MailController::class, 'createFolder'])
+            ->middleware('throttle:10,1');
         Route::patch('/folders/{folder}', [MailController::class, 'renameFolder'])
-            ->where('folder', '.*');
+            ->where('folder', '.*')
+            ->middleware('throttle:10,1');
         Route::delete('/folders/{folder}', [MailController::class, 'deleteFolder'])
-            ->where('folder', '.*');
+            ->where('folder', '.*')
+            ->middleware('throttle:10,1');
 
         // Mensagens — batch operations e search ANTES de getMessages (wildcard)
         Route::post('/messages/{folder}/batch-seen', [MailController::class, 'batchToggleSeen'])
-            ->where('folder', '[^/]+');
+            ->where('folder', '[^/]+')
+            ->middleware('throttle:10,1');
         Route::post('/messages/{folder}/batch-delete', [MailController::class, 'batchDelete'])
-            ->where('folder', '[^/]+');
+            ->where('folder', '[^/]+')
+            ->middleware('throttle:10,1');
         Route::post('/messages/{folder}/batch-move', [MailController::class, 'batchMove'])
-            ->where('folder', '[^/]+');
+            ->where('folder', '[^/]+')
+            ->middleware('throttle:10,1');
         Route::get('/messages/{folder}/search', [MailController::class, 'searchMessages'])
-            ->where('folder', '[^/]+');
+            ->where('folder', '[^/]+')
+            ->middleware('throttle:30,1');
         Route::get('/messages/{folder}', [MailController::class, 'getMessages'])
             ->where('folder', '.*');
         Route::get('/message/{folder}/{uid}', [MailController::class, 'getMessage'])
@@ -79,18 +86,21 @@ Route::middleware('imap.auth')->group(function () {
         Route::delete('/message/{folder}/{uid}', [MailController::class, 'delete'])
             ->where('folder', '.*');
 
-        // Anexos
+        // Anexos (download: 60/min, upload: 20/10min)
         Route::get('/attachment/{folder}/{uid}/{index}', [MailController::class, 'downloadAttachment'])
-            ->where(['folder' => '.*', 'uid' => '[0-9]+', 'index' => '[0-9]+']);
+            ->where(['folder' => '.*', 'uid' => '[0-9]+', 'index' => '[0-9]+'])
+            ->middleware('throttle:60,1');
 
         // Composição
         Route::post('/send', [ComposeController::class, 'send']);
         Route::post('/drafts', [ComposeController::class, 'saveDraft']);
-        Route::post('/attachments', [ComposeController::class, 'uploadAttachment']);
+        Route::post('/attachments', [ComposeController::class, 'uploadAttachment'])
+            ->middleware('throttle:20,10');
         Route::delete('/attachments/{id}', [ComposeController::class, 'removeAttachment']);
 
-        // Contatos
-        Route::get('/contacts/suggest', [MailController::class, 'suggestContacts']);
+        // Contatos (5/minuto)
+        Route::get('/contacts/suggest', [MailController::class, 'suggestContacts'])
+            ->middleware('throttle:5,1');
     });
 
     // API settings

@@ -67,11 +67,11 @@ class ComposeController extends Controller
     public function send(Request $request): JsonResponse
     {
         $request->validate([
-            'to' => 'required|array|min:1',
+            'to' => 'required|array|min:1|max:50',
             'to.*.email' => 'required|email',
-            'cc' => 'nullable|array',
+            'cc' => 'nullable|array|max:50',
             'cc.*.email' => 'nullable|email',
-            'bcc' => 'nullable|array',
+            'bcc' => 'nullable|array|max:50',
             'bcc.*.email' => 'nullable|email',
             'subject' => 'nullable|string|max:998',
             'body_html' => 'nullable|string|max:5000000',
@@ -194,7 +194,20 @@ class ComposeController extends Controller
     public function uploadAttachment(Request $request): JsonResponse
     {
         $request->validate([
-            'file' => 'required|file|max:10240', // 10MB
+            'file' => [
+                'required',
+                'file',
+                'max:10240', // 10MB
+                function ($attribute, $value, $fail) {
+                    $dangerous = [
+                        'application/x-httpd-php', 'text/x-php', 'application/x-php',
+                        'application/x-executable', 'application/x-sharedlib',
+                    ];
+                    if (in_array($value->getMimeType(), $dangerous)) {
+                        $fail('Tipo de arquivo não permitido.');
+                    }
+                },
+            ],
         ]);
 
         $file = $request->file('file');
@@ -212,7 +225,6 @@ class ComposeController extends Controller
             'size' => $file->getSize(),
             'size_human' => $this->humanFileSize($file->getSize()),
             'mime' => $file->getMimeType(),
-            'path' => $path,
         ]);
     }
 

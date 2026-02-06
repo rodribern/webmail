@@ -46,7 +46,7 @@ class AuthController extends Controller
         $password = $request->input('password');
 
         // Rate limiting: 5 tentativas por minuto por IP
-        $rateLimitKey = 'login:' . $request->ip();
+        $rateLimitKey = 'login:ip:' . $request->ip();
 
         if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
             $seconds = RateLimiter::availableIn($rateLimitKey);
@@ -55,7 +55,18 @@ class AuthController extends Controller
             ]);
         }
 
+        // Rate limiting: 10 tentativas por 5 minutos por email (protege contra brute force distribuído)
+        $rateLimitKeyEmail = 'login:email:' . strtolower($email);
+
+        if (RateLimiter::tooManyAttempts($rateLimitKeyEmail, 10)) {
+            $seconds = RateLimiter::availableIn($rateLimitKeyEmail);
+            return back()->withErrors([
+                'email' => "Muitas tentativas para esta conta. Tente novamente em {$seconds} segundos.",
+            ]);
+        }
+
         RateLimiter::hit($rateLimitKey, 60);
+        RateLimiter::hit($rateLimitKeyEmail, 300);
 
         // Tenta autenticar via IMAP
         $result = $this->imapAuthService->authenticate($email, $password);
@@ -71,8 +82,9 @@ class AuthController extends Controller
             $result['client']->disconnect();
         }
 
-        // Limpa rate limit em caso de sucesso
+        // Limpa rate limits em caso de sucesso
         RateLimiter::clear($rateLimitKey);
+        RateLimiter::clear($rateLimitKeyEmail);
 
         // Regenera a sessão para prevenir session fixation
         $request->session()->regenerate();
@@ -105,6 +117,7 @@ class AuthController extends Controller
                 'is_admin' => $isAdmin,
             ],
             'branding' => $branding,
+            'login_at' => now(),
         ]);
 
         return redirect()->intended('/mail');

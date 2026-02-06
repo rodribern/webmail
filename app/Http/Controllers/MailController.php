@@ -279,7 +279,7 @@ class MailController extends Controller
         } catch (\Exception $e) {
             $this->imapService->disconnect();
             \Log::error('batchToggleSeen exception', ['error' => $e->getMessage()]);
-            return response()->json(['error' => 'Erro ao alterar flags: ' . $e->getMessage()], 500);
+            return response()->json(['error' => 'Erro ao alterar flags. Tente novamente.'], 500);
         }
     }
 
@@ -344,8 +344,8 @@ class MailController extends Controller
         $filename = preg_replace('/[^\w\-. ]/', '_', $attachment['name']);
         $mime = $attachment['mime'] ?: 'application/octet-stream';
 
-        // Tipos que o navegador pode exibir inline
-        $inlineTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'application/pdf'];
+        // Tipos que o navegador pode exibir inline (SVG removido — pode conter JavaScript)
+        $inlineTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
         $disposition = in_array($mime, $inlineTypes) ? 'inline' : 'attachment';
 
         return response()->stream(function () use ($attachment) {
@@ -354,6 +354,8 @@ class MailController extends Controller
             'Content-Type' => $mime,
             'Content-Disposition' => "{$disposition}; filename=\"{$filename}\"",
             'Content-Length' => strlen($attachment['content']),
+            'X-Content-Type-Options' => 'nosniff',
+            'Content-Security-Policy' => "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
         ]);
     }
 

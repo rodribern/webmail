@@ -45,17 +45,21 @@ class BrandingRequest extends FormRequest
         if ($this->has('custom_css') && $this->custom_css) {
             $css = $this->custom_css;
 
-            // Remove @import
-            $css = preg_replace('/@import\s+[^;]+;?/i', '', $css);
+            // Decodifica HTML entities antes de filtrar (previne bypass via encoding)
+            $css = html_entity_decode($css, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
-            // Remove url() com protocolos externos
-            $css = preg_replace('/url\s*\(\s*["\']?\s*(https?:|ftp:|\/\/)[^)]+\)/i', 'url()', $css);
+            // Remove todas as at-rules perigosas
+            $css = preg_replace('/@import\s+[^;]+;?/i', '', $css);
+            $css = preg_replace('/@font-face\s*\{[^}]*\}/is', '', $css);
+
+            // Remove url() com qualquer protocolo ou referência externa
+            $css = preg_replace('/url\s*\(\s*["\']?\s*(https?:|ftp:|data:|\/\/)[^)]+\)/i', 'url()', $css);
 
             // Remove expression() (IE)
             $css = preg_replace('/expression\s*\([^)]*\)/i', '', $css);
 
-            // Remove javascript:
-            $css = preg_replace('/javascript\s*:/i', '', $css);
+            // Remove javascript: (incluindo variantes com espaços intercalados)
+            $css = preg_replace('/j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i', '', $css);
 
             // Remove behavior (IE)
             $css = preg_replace('/behavior\s*:\s*[^;]+;?/i', '', $css);

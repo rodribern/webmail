@@ -218,7 +218,7 @@ class ImapService
             ];
         } catch (\Exception $e) {
             \Log::error('IMAP getMessages error: ' . $e->getMessage());
-            return ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'error' => $e->getMessage()];
+            return ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'error' => 'Erro ao carregar mensagens. Tente novamente.'];
         }
     }
 

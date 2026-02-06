@@ -183,10 +183,17 @@ Você tem energia ilimitada. O humano não. Use sua persistência com sabedoria 
 
 ### Ambientes
 
-| Ambiente | URL | Diretório | Branch |
-|----------|-----|-----------|--------|
-| DEV | `webmail-dev.scriptorium.net.br` | `/var/www/dev/webmail` | `dev` |
-| PRD | `webmail.scriptorium.net.br` | `/var/www/prd/webmail` | `main` |
+| Ambiente | URLs | Diretório | Branch |
+|----------|------|-----------|--------|
+| DEV | `webmail-dev.scriptorium.net.br`, `webmail-dev.ista.com.br`, `webmail-dev.siscar.app.br` | `/var/www/dev/webmail` | `dev` |
+| PRD | `mail.ista.com.br`, `webmail.ista.com.br`, `mail.siscar.app.br`, `webmail.siscar.app.br` | `/var/www/prd/webmail` | `main` |
+
+### Nginx de Produção (configs híbridos)
+
+- `/etc/nginx/sites-available/webmail.ista.com.br.conf` — `mail.ista.com.br` + `webmail.ista.com.br`
+- `/etc/nginx/sites-available/webmail.siscar.app.br.conf` — `mail.siscar.app.br` + `webmail.siscar.app.br`
+- Rotas `/autodiscover` e `/radicale/` são proxied para Modoboa (uWSGI / localhost:5232)
+- Todo o resto é servido pelo Laravel
 
 ### Repositório Git
 
@@ -258,6 +265,9 @@ php artisan migrate --force
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache
+
+# 7. Recarregar PHP-FPM (limpa OPcache — OBRIGATÓRIO)
+systemctl reload php8.3-fpm
 ```
 
 ### O que NÃO fazer
@@ -266,6 +276,7 @@ php artisan view:cache
 - **Nunca fazer `git push --force`** em nenhuma branch sem aprovação explícita.
 - **Nunca commitar `.env`** — ele está no `.gitignore`. Cada ambiente tem o seu.
 - **Nunca rodar `migrate` em PRD sem antes testar a migration em DEV.**
+- **Nunca esquecer de rodar `systemctl reload php8.3-fpm` após alterações em PRD.** O OPcache mantém o código compilado em memória — sem reload, o código antigo continua sendo servido.
 
 ### Arquivos que existem apenas no servidor (fora do git)
 

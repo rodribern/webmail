@@ -131,8 +131,17 @@ class BrandingController extends Controller
             Storage::disk('public')->put($pngFilename, $image->toPng()->toString());
             $filename = $pngFilename;
         } else {
-            // SVG: salva diretamente
-            Storage::disk('public')->put($filename, file_get_contents($file));
+            // SVG: sanitiza para remover scripts e event handlers antes de salvar
+            $svgContent = file_get_contents($file);
+            $sanitizer = new \enshrined\svgSanitize\Sanitizer();
+            $sanitizer->removeRemoteReferences(true);
+            $cleanSvg = $sanitizer->sanitize($svgContent);
+
+            if (!$cleanSvg) {
+                return response()->json(['error' => 'Arquivo SVG inválido ou não pôde ser sanitizado.'], 422);
+            }
+
+            Storage::disk('public')->put($filename, $cleanSvg);
         }
 
         $branding->domain_id = $domainId;
